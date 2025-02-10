@@ -20,3 +20,13 @@ export interface BlogPost {
   image: string;
   slug: string;
 }
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: 'user' | 'admin';
+  isBlocked: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
