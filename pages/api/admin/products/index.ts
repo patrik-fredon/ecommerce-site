@@ -1,43 +1,33 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { withAdminAuth } from '../../../../middleware/adminAuth';
 import { AuthRequest } from '../../../../types/auth';
-import dbConnect from '../../../../lib/dbConnect';
-import Product from '../../../../models/Product';
+import { productService } from '../../../../services/ProductService';
 import { logModelActivity, logBulkActivity } from '../../../../utils/adminActivity';
 import { ActivityType, ActivitySubject } from '../../../../utils/adminActivity';
+import { withCache, CacheTags, CacheConfigs } from '../../../../utils/adminCache';
 import { withErrorHandler } from '../../../../utils/adminErrorHandler';
-import { withCache, CacheTags, CacheConfigs, combineTags } from '../../../../utils/adminCache';
+import { validateRequestAndSendError } from '../../../../utils/adminValidation';
+import { ValidationMessages, validateAndSendIdErrors } from '../../../../utils/adminValidators';
 import {
   sendSuccess,
   sendError,
   sendBadRequest,
   sendMethodNotAllowed,
-  sendPaginated,
+  sendPaginated
 } from '../../../../utils/adminResponse';
 import {
   getPaginationParams,
   buildQuery,
   applyFilters,
 } from '../../../../utils/adminPagination';
-import { validateRequest, validateRequestAndSendError } from '../../../../utils/adminValidation';
-import {
-  ValidationPatterns,
-  validateAndSendIdErrors,
-  ObjectIdRule,
-  ValidationMessages,
-} from '../../../../utils/adminValidators';
 
-async function productsHandler(req: AuthRequest, res: NextApiResponse) {
-  const { method } = req;
-
-  await dbConnect();
-
-  switch (method) {
+async function handler(req: AuthRequest, res: NextApiResponse) {
+  switch (req.method) {
     case 'GET':
       try {
         const { skip, limit, page, sort } = getPaginationParams(req, {
           defaultLimit: 20,
-          maxLimit: 50,
+          maxLimit: 50
         });
 
         const query = buildQuery(req, {
@@ -53,51 +43,32 @@ async function productsHandler(req: AuthRequest, res: NextApiResponse) {
         });
 
         const filters = applyFilters(req, [
-          { 
-            field: 'category', 
-            values: ['electronics', 'clothing', 'books', 'home'], 
-            type: 'in' 
-          },
-          { 
-            field: 'featured', 
-            values: ['true', 'false'], 
-            type: 'boolean' 
-          },
-          { 
-            field: 'stock', 
-            values: ['0'], 
-            type: 'exists' 
-          }
+          { field: 'category', values: ['electronics', 'clothing', 'books', 'home'], type: 'in' },
+          { field: 'featured', values: ['true', 'false'], type: 'boolean' },
+          { field: 'stock', values: ['0'], type: 'exists' }
         ]);
 
-        const finalQuery = { ...query, ...filters };
-
         const [products, total] = await Promise.all([
-          Product.find(finalQuery)
-            .sort(sort)
-            .skip(skip)
-            .limit(limit)
-            .lean(),
-          Product.countDocuments(finalQuery),
+          productService.find(
+            { ...query, ...filters },
+            { skip, limit, sort }
+          ),
+          productService.count({ ...query, ...filters })
         ]);
 
         return sendPaginated(res, products, {
           page,
           limit,
           total,
-          message: 'Products retrieved successfully',
-          meta: {
-            filters: req.query,
-          },
+          message: 'Products retrieved successfully'
         });
       } catch (error) {
         throw error;
       }
-      break;
 
     case 'POST':
       try {
-        const postValidation = validateRequestAndSendError(
+        const validation = validateRequestAndSendError(
           req,
           res,
           [
@@ -107,7 +78,7 @@ async function productsHandler(req: AuthRequest, res: NextApiResponse) {
               required: true,
               min: 2,
               max: 100,
-              message: ValidationMessages.MIN_LENGTH(2),
+              message: ValidationMessages.MIN_LENGTH(2)
             },
             {
               field: 'description',
@@ -115,69 +86,59 @@ async function productsHandler(req: AuthRequest, res: NextApiResponse) {
               required: true,
               min: 10,
               max: 1000,
-              message: ValidationMessages.MIN_LENGTH(10),
+              message: ValidationMessages.MIN_LENGTH(10)
             },
             {
               field: 'price',
               type: 'number',
               required: true,
               min: 0,
-              pattern: ValidationPatterns.CURRENCY,
-              message: 'Invalid price format',
+              message: 'Price must be a positive number'
             },
             {
               field: 'stock',
               type: 'number',
               required: true,
               min: 0,
-              pattern: ValidationPatterns.POSITIVE_INT,
-              message: 'Stock must be a positive integer',
+              message: 'Stock must be a positive integer'
             },
             {
               field: 'category',
               type: 'string',
               required: true,
               enum: ['electronics', 'clothing', 'books', 'home'],
-              message: ValidationMessages.INVALID_ENUM(['electronics', 'clothing', 'books', 'home']),
+              message: ValidationMessages.INVALID_ENUM(['electronics', 'clothing', 'books', 'home'])
             },
             {
-              field: 'sku',
+              field: 'image',
               type: 'string',
-              pattern: ValidationPatterns.SKU,
-              message: 'Invalid SKU format',
+              required: true
             },
             {
               field: 'featured',
-              type: 'boolean',
-            },
+              type: 'boolean'
+            }
           ],
-          { source: 'body', allowUnknown: false }
+          { source: 'body' }
         );
 
-        if (postValidation) {
-          return postValidation;
+        if (validation) {
+          return validation;
         }
 
-        // Generate SKU if not provided
-        if (!req.body.sku) {
-          const count = await Product.countDocuments();
-          req.body.sku = `PRD${(count + 1).toString().padStart(6, '0')}`;
-        }
-
-        const product = await Product.create(req.body);
+        const product = await productService.create(req.body);
 
         await logModelActivity({
           req,
           action: ActivityType.PRODUCT_CREATED,
           subject: ActivitySubject.PRODUCT,
-          itemName: product.name,
+          itemName: product.name
         });
 
         return sendSuccess(res, product, 'Product created successfully', undefined, 201);
       } catch (error) {
         throw error;
       }
-      break;
 
     case 'PATCH':
       try {
@@ -188,9 +149,8 @@ async function productsHandler(req: AuthRequest, res: NextApiResponse) {
         }
 
         switch (operation) {
-          case 'bulk-update-stock':
-            const { updates } = req.body;
-            const stockValidation = validateRequestAndSendError(
+          case 'bulk-update-stock': {
+            const validation = validateRequestAndSendError(
               req,
               res,
               [
@@ -199,71 +159,31 @@ async function productsHandler(req: AuthRequest, res: NextApiResponse) {
                   type: 'array',
                   required: true,
                   min: 1,
-                  message: ValidationMessages.MIN_ITEMS(1),
-                },
-              ],
-              { source: 'body', allowUnknown: false }
-            );
-
-            if (stockValidation) {
-              return stockValidation;
-            }
-
-            // Validate each update item
-            for (const update of updates) {
-              const itemValidation = validateRequest(
-                { body: update } as NextApiRequest,
-                [
-                  {
-                    field: 'id',
-                    ...ObjectIdRule,
-                  },
-                  {
-                    field: 'quantity',
-                    type: 'number',
-                    required: true,
-                    pattern: ValidationPatterns.POSITIVE_INT,
-                    message: 'Quantity must be a positive integer',
-                  },
-                ],
-                { source: 'body' }
-              );
-
-              if (itemValidation.length > 0) {
-                return sendBadRequest(res, 'Invalid update item format', itemValidation);
-              }
-            }
-
-            const results = await Promise.all(
-              updates.map(async (update: { id: string; quantity: number }) => {
-                const { id, quantity } = update;
-                try {
-                  const product = await Product.findByIdAndUpdate(
-                    id,
-                    { $inc: { stock: quantity } },
-                    { new: true }
-                  );
-                  if (product) {
-                    await logModelActivity({
-                      req,
-                      action: ActivityType.PRODUCT_STOCK_UPDATED,
-                      subject: ActivitySubject.PRODUCT,
-                      itemName: product.name,
-                      details: `Stock ${quantity >= 0 ? 'increased' : 'decreased'} by ${Math.abs(quantity)} units`,
-                    });
-                  }
-                  return { id, success: true, product };
-                } catch (error) {
-                  return { id, success: false, error: (error as Error).message };
+                  message: ValidationMessages.MIN_ITEMS(1)
                 }
-              })
+              ],
+              { source: 'body' }
             );
+
+            if (validation) {
+              return validation;
+            }
+
+            const { updates } = req.body;
+            const results = await productService.bulkUpdateStock(updates);
+            
+            await logBulkActivity({
+              req,
+              action: ActivityType.PRODUCT_STOCK_UPDATED,
+              subject: ActivitySubject.PRODUCT,
+              count: updates.length,
+            });
 
             return sendSuccess(res, results);
+          }
 
-          case 'bulk-toggle-featured':
-            const { productIds, featured } = req.body;
-            const featuredValidation = validateRequestAndSendError(
+          case 'bulk-toggle-featured': {
+            const validation = validateRequestAndSendError(
               req,
               res,
               [
@@ -272,29 +192,28 @@ async function productsHandler(req: AuthRequest, res: NextApiResponse) {
                   type: 'array',
                   required: true,
                   min: 1,
-                  message: ValidationMessages.MIN_ITEMS(1),
+                  message: ValidationMessages.MIN_ITEMS(1)
                 },
                 {
                   field: 'featured',
                   type: 'boolean',
-                  required: true,
-                },
+                  required: true
+                }
               ],
-              { source: 'body', allowUnknown: false }
+              { source: 'body' }
             );
 
-            if (featuredValidation) {
-              return featuredValidation;
+            if (validation) {
+              return validation;
             }
+
+            const { productIds, featured } = req.body;
 
             if (validateAndSendIdErrors(res, productIds, 'productIds')) {
               return;
             }
 
-            const updatedProducts = await Product.updateMany(
-              { _id: { $in: productIds } },
-              { $set: { featured } }
-            );
+            const result = await productService.bulkToggleFeatured(productIds, featured);
 
             await logBulkActivity({
               req,
@@ -305,9 +224,10 @@ async function productsHandler(req: AuthRequest, res: NextApiResponse) {
 
             return sendSuccess(
               res,
-              { modifiedCount: updatedProducts.modifiedCount },
-              `Successfully ${featured ? 'featured' : 'unfeatured'} ${updatedProducts.modifiedCount} products`
+              result,
+              `Successfully ${featured ? 'featured' : 'unfeatured'} ${result.modifiedCount} products`
             );
+          }
 
           default:
             return sendBadRequest(res, 'Invalid operation');
@@ -315,7 +235,6 @@ async function productsHandler(req: AuthRequest, res: NextApiResponse) {
       } catch (error) {
         throw error;
       }
-      break;
 
     default:
       return sendMethodNotAllowed(res, ['GET', 'POST', 'PATCH']);
@@ -324,19 +243,10 @@ async function productsHandler(req: AuthRequest, res: NextApiResponse) {
 
 export default withAdminAuth(
   withCache(
-    withErrorHandler(
-      productsHandler,
-      'manage',
-      'Products',
-      'Error managing products'
-    ),
+    withErrorHandler(handler, 'manage', 'Products', 'Error managing products'),
     {
-      ...CacheConfigs.mediumTerm,
-      tags: combineTags(
-        [CacheTags.PRODUCTS],
-        [CacheTags.FEATURED],
-        [CacheTags.STATS]
-      ),
+      ...CacheConfigs.shortTerm,
+      tags: [CacheTags.PRODUCTS, CacheTags.STATS]
     }
   )
 );

@@ -1,142 +1,142 @@
-import { AuthRequest } from '../types/auth';
-import { logAdminAction, logAdminBulkOperation } from './adminLogger';
+import { NextApiRequest } from 'next';
+import { Types } from 'mongoose';
+import { ApiUser } from '../types/auth';
+import { activityLogService } from '../services/ActivityLogService';
+import { ActivityType, ActivitySubject, ACTIVITY_TYPES, ACTIVITY_SUBJECTS } from '../types/activity';
 
-interface ActivityOptions {
-  req: AuthRequest;
-  action: string;
-  subject: string;
+// Re-export types for backward compatibility
+export { ActivityType, ActivitySubject, ACTIVITY_TYPES, ACTIVITY_SUBJECTS };
+
+export interface ActivityLogData {
+  userId: Types.ObjectId;
+  action: ActivityType;
+  subject: ActivitySubject;
+  itemName: string;
   details?: string;
-  count?: number;
-  itemName?: string;
+}
+
+export interface ExtendedRequest extends Omit<NextApiRequest, 'user'> {
+  user?: ApiUser;
+}
+
+export interface LogActivityOptions {
+  req: ExtendedRequest;
+  action: ActivityType;
+  subject: ActivitySubject;
+  itemName: string;
+  details?: string;
 }
 
 export async function logModelActivity({
   req,
   action,
   subject,
-  details,
   itemName,
-}: ActivityOptions) {
-  const user = req.user;
-  const itemInfo = itemName ? ` "${itemName}"` : '';
-  const fullDetails = details || `${subject}${itemInfo} ${action} by ${user?.name || 'Unknown'}`;
-
-  await logAdminAction({
-    action,
-    subject,
-    details: fullDetails,
-    adminName: user?.name,
-    adminId: user?._id?.toString(),
-  });
-}
-
-export async function logBulkActivity({
-  req,
-  action,
-  subject,
   details,
-  count = 0,
-}: ActivityOptions) {
-  const user = req.user;
-  const countInfo = count > 0 ? ` ${count} items` : '';
-  const fullDetails = details || `${subject}${countInfo} ${action} by ${user?.name || 'Unknown'}`;
+}: LogActivityOptions): Promise<void> {
+  if (!req.user?.id) {
+    console.warn('No user ID found in request for activity logging');
+    return;
+  }
 
-  await logAdminBulkOperation({
-    action,
-    subject,
-    details: fullDetails,
-    adminName: user?.name,
-    adminId: user?._id?.toString(),
-  });
+  try {
+    await activityLogService.create({
+      userId: new Types.ObjectId(req.user.id),
+      action,
+      subject,
+      itemName,
+      details,
+    });
+  } catch (error) {
+    console.error('Error logging activity:', error);
+  }
 }
 
-// Example usage:
-/*
-// For single item operations
-await logModelActivity({
-  req,
-  action: 'updated',
-  subject: 'Product',
-  itemName: product.name,
-  details: `Stock updated to ${newStock}`,
-});
+export function getActivityDescription(
+  action: ActivityType,
+  subject: ActivitySubject,
+  itemName?: string,
+  details?: string
+): string {
+  const parts = [
+    `${action} ${subject}`,
+    itemName && `"${itemName}"`,
+    details,
+  ].filter(Boolean);
 
-// For bulk operations
-await logBulkActivity({
-  req,
-  action: 'status-updated',
-  subject: 'Orders',
-  count: orderIds.length,
-  details: `Marked as "${status}"`,
-});
-*/
+  return parts.join(' - ');
+}
 
-// Common activity types
-export const ActivityType = {
-  // Product activities
-  PRODUCT_CREATED: 'created',
-  PRODUCT_UPDATED: 'updated',
-  PRODUCT_DELETED: 'deleted',
-  PRODUCT_FEATURED: 'featured',
-  PRODUCT_UNFEATURED: 'unfeatured',
-  PRODUCT_STOCK_UPDATED: 'stock-updated',
+export function getActivityIcon(subject: ActivitySubject): { icon: string; bgColor: string } {
+  switch (subject) {
+    case ActivitySubject.USER:
+      return { icon: '👤', bgColor: 'bg-blue-500' };
+    case ActivitySubject.BLOG:
+      return { icon: '📝', bgColor: 'bg-green-500' };
+    case ActivitySubject.PRODUCT:
+      return { icon: '📦', bgColor: 'bg-purple-500' };
+    case ActivitySubject.SETTINGS:
+      return { icon: '⚙️', bgColor: 'bg-gray-500' };
+    case ActivitySubject.SYSTEM:
+      return { icon: '🔧', bgColor: 'bg-yellow-500' };
+    default:
+      return { icon: '📋', bgColor: 'bg-gray-500' };
+  }
+}
 
-  // Order activities
-  ORDER_STATUS_UPDATED: 'status-updated',
-  ORDER_PAYMENT_UPDATED: 'payment-updated',
-  ORDER_CANCELLED: 'cancelled',
-  ORDER_NOTE_ADDED: 'note-added',
+export function getActivityColor(action: ActivityType): string {
+  if (action.includes('CREATED')) {
+    return 'text-green-600';
+  }
+  if (action.includes('UPDATED') || action.includes('LOGIN') || action.includes('INFO')) {
+    return 'text-blue-600';
+  }
+  if (action.includes('DELETED') || action.includes('ERROR')) {
+    return 'text-red-600';
+  }
+  if (action.includes('BLOCKED') || action.includes('WARNING')) {
+    return 'text-yellow-600';
+  }
+  if (action.includes('UNBLOCKED')) {
+    return 'text-green-600';
+  }
+  return 'text-gray-600';
+}
 
-  // Blog activities
-  BLOG_CREATED: 'created',
-  BLOG_UPDATED: 'updated',
-  BLOG_DELETED: 'deleted',
-  BLOG_PUBLISHED: 'published',
-  BLOG_UNPUBLISHED: 'unpublished',
+export function getActivityVerb(action: ActivityType): string {
+  const verb = action
+    .split('_')
+    .pop()!
+    .toLowerCase()
+    .replace(/ed$/, '')
+    .replace(/d$/, '');
 
-  // User activities
-  USER_CREATED: 'created',
-  USER_UPDATED: 'updated',
-  USER_DELETED: 'deleted',
-  USER_BLOCKED: 'blocked',
-  USER_UNBLOCKED: 'unblocked',
-  USER_ROLE_UPDATED: 'role-updated',
+  // Special cases for system activities
+  if (action.startsWith('SYSTEM_')) {
+    return 'reported';
+  }
 
-  // Category activities
-  CATEGORY_CREATED: 'created',
-  CATEGORY_UPDATED: 'updated',
-  CATEGORY_DELETED: 'deleted',
-  CATEGORY_MERGED: 'merged',
+  return verb;
+}
 
-  // Bulk operations
-  BULK_UPDATE: 'bulk-update',
-  BULK_DELETE: 'bulk-delete',
-  BULK_STATUS_UPDATE: 'bulk-status-update',
-  BULK_FEATURE: 'bulk-feature',
-  BULK_UNFEATURE: 'bulk-unfeature',
-  BULK_PUBLISH: 'bulk-publish',
-  BULK_UNPUBLISH: 'bulk-unpublish',
-  BULK_BLOCK: 'bulk-block',
-  BULK_UNBLOCK: 'bulk-unblock',
+export function formatActivityTimestamp(date: Date): string {
+  return new Intl.DateTimeFormat('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: true,
+  }).format(date);
+}
 
-  // System activities
-  SETTINGS_UPDATED: 'settings-updated',
-  CONFIG_UPDATED: 'config-updated',
-  MAINTENANCE_PERFORMED: 'maintenance',
-  BACKUP_CREATED: 'backup-created',
-  RESTORE_PERFORMED: 'restore-performed',
-} as const;
+export function isSystemActivity(action: ActivityType): boolean {
+  return action.startsWith('SYSTEM_');
+}
 
-// Common subjects
-export const ActivitySubject = {
-  PRODUCT: 'Product',
-  ORDER: 'Order',
-  BLOG: 'Blog Post',
-  USER: 'User',
-  CATEGORY: 'Category',
-  SYSTEM: 'System',
-  SETTINGS: 'Settings',
-  CONFIG: 'Configuration',
-  MAINTENANCE: 'Maintenance',
-  BACKUP: 'Backup',
-} as const;
+export function getSystemActivityLevel(action: ActivityType): 'error' | 'warning' | 'info' | null {
+  if (action === ActivityType.SYSTEM_ERROR) return 'error';
+  if (action === ActivityType.SYSTEM_WARNING) return 'warning';
+  if (action === ActivityType.SYSTEM_INFO) return 'info';
+  return null;
+}

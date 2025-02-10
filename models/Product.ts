@@ -1,27 +1,10 @@
-import mongoose from 'mongoose';
+import mongoose, { Model } from 'mongoose';
+import { IProduct, IProductMethods, IProductModel, IProductDocument } from '../types/models';
+import { createHash } from 'crypto';
 
-export interface IProduct extends mongoose.Document {
-  name: string;
-  description: string;
-  price: number;
-  image: string;
-  category: string;
-  featured: boolean;
-  rating: number;
-  reviews: number;
-  stock: number;
-  sku: string;
-  lastStockUpdate?: Date;
-}
+type ProductModelType = Model<IProductDocument> & IProductModel;
 
-interface IProductModel extends mongoose.Model<IProduct> {
-  findFeatured(): Promise<IProduct[]>;
-  findByCategory(category: string): Promise<IProduct[]>;
-  findInStock(): Promise<IProduct[]>;
-  updateStock(id: string, quantity: number): Promise<IProduct | null>;
-}
-
-const productSchema = new mongoose.Schema<IProduct, IProductModel>(
+const productSchema = new mongoose.Schema<IProductDocument>(
   {
     name: {
       type: String,
@@ -58,7 +41,7 @@ const productSchema = new mongoose.Schema<IProduct, IProductModel>(
       min: [0, 'Rating must be at least 0'],
       max: [5, 'Rating cannot be more than 5'],
     },
-    reviews: {
+    reviewCount: {
       type: Number,
       default: 0,
       min: [0, 'Number of reviews cannot be negative'],
@@ -78,10 +61,26 @@ const productSchema = new mongoose.Schema<IProduct, IProductModel>(
     },
     lastStockUpdate: {
       type: Date,
-    },
+    }
   },
-  { timestamps: true }
+  { 
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
+  }
 );
+
+// Add virtual populate for reviews
+productSchema.virtual('reviews', {
+  ref: 'Review',
+  localField: '_id',
+  foreignField: 'product'
+});
+
+// Add virtual for review count
+productSchema.virtual('totalReviews').get(function() {
+  return this.reviewCount || 0;
+});
 
 // Add indexes for common queries
 productSchema.index({ category: 1 });
@@ -92,55 +91,69 @@ productSchema.index({ stock: 1 });
 productSchema.index({ sku: 1 }, { unique: true });
 productSchema.index({ name: 'text', description: 'text' }); // For text search
 
-// Static methods
-productSchema.statics.findFeatured = function() {
-  return this.find({ featured: true, stock: { $gt: 0 } })
-    .sort({ rating: -1 })
-    .exec();
-};
-
-productSchema.statics.findByCategory = function(category: string) {
-  return this.find({ category, stock: { $gt: 0 } })
-    .sort({ rating: -1 })
-    .exec();
-};
-
-productSchema.statics.findInStock = function() {
-  return this.find({ stock: { $gt: 0 } })
-    .sort({ category: 1, rating: -1 })
-    .exec();
-};
-
-productSchema.statics.updateStock = async function(id: string, quantity: number) {
-  const product = await this.findById(id);
-  if (!product) return null;
-
-  const newStock = product.stock + quantity;
+// Instance methods
+productSchema.methods.updateStock = async function(quantity: number): Promise<IProductDocument> {
+  const newStock = this.stock + quantity;
   if (newStock < 0) {
     throw new Error('Insufficient stock');
   }
+  this.stock = newStock;
+  this.lastStockUpdate = new Date();
+  return this.save();
+};
 
-  product.stock = newStock;
-  product.lastStockUpdate = new Date();
-  return product.save();
+productSchema.methods.updateRating = async function(newRating: number): Promise<IProductDocument> {
+  if (newRating < 0 || newRating > 5) {
+    throw new Error('Rating must be between 0 and 5');
+  }
+  const currentTotal = this.rating * this.reviewCount;
+  this.reviewCount += 1;
+  this.rating = (currentTotal + newRating) / this.reviewCount;
+  return this.save();
+};
+
+// Static methods
+productSchema.statics.findFeatured = function(): Promise<IProductDocument[]> {
+  return this.find({ featured: true, stock: { $gt: 0 } })
+    .sort({ rating: -1 })
+    .populate('reviews')
+    .exec();
+};
+
+productSchema.statics.findByCategory = function(category: string): Promise<IProductDocument[]> {
+  return this.find({ category, stock: { $gt: 0 } })
+    .sort({ rating: -1 })
+    .populate('reviews')
+    .exec();
+};
+
+productSchema.statics.findInStock = function(): Promise<IProductDocument[]> {
+  return this.find({ stock: { $gt: 0 } })
+    .sort({ category: 1, rating: -1 })
+    .populate('reviews')
+    .exec();
 };
 
 // Pre-save middleware
 productSchema.pre('save', function(next) {
   if (!this.sku) {
-    // Generate SKU from name and random number if not provided
-    this.sku = this.name
-      .substring(0, 3)
-      .toUpperCase()
-      .replace(/[^A-Z]/g, '')
-      .padEnd(3, 'X') +
-      Math.floor(Math.random() * 10000)
-        .toString()
-        .padStart(4, '0');
+    // Generate SKU using a more reliable method
+    const hash = createHash('md5')
+      .update(this.name + Date.now().toString())
+      .digest('hex');
+    this.sku = `${this.name.substring(0, 3).toUpperCase()}-${hash.substring(0, 6)}`;
   }
   next();
 });
 
-const Product = mongoose.models.Product || mongoose.model<IProduct, IProductModel>('Product', productSchema);
+// Virtual for calculating availability status
+productSchema.virtual('availability').get(function() {
+  if (this.stock <= 0) return 'Out of Stock';
+  if (this.stock < 10) return 'Low Stock';
+  return 'In Stock';
+});
+
+const Product = (mongoose.models.Product as ProductModelType) || 
+  mongoose.model<IProductDocument, ProductModelType>('Product', productSchema);
 
 export default Product;

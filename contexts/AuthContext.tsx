@@ -17,14 +17,20 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   useEffect(() => {
     // Check for stored auth data on mount
-    const storedToken = localStorage.getItem('token');
-    const storedUser = localStorage.getItem('user');
+    const storedToken = localStorage.getItem('token') || null;
+    const storedUser = localStorage.getItem('user') || null;
 
     if (storedToken && storedUser) {
-      setToken(storedToken);
-      setUser(JSON.parse(storedUser));
+      try {
+        setToken(storedToken);
+        setUser(JSON.parse(storedUser));
+      } catch (error) {
+        console.error('Failed to parse user data:', error);
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+      }
     }
-    
+
     setIsLoading(false);
   }, []);
 

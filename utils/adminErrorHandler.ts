@@ -1,133 +1,150 @@
-import { NextApiResponse } from 'next';
-import { AuthRequest } from '../types/auth';
-import { logAdminError } from './adminLogger';
+import { NextApiHandler, NextApiRequest, NextApiResponse } from 'next';
+import { MongoError } from 'mongodb';
+import { logModelActivity } from './adminActivity';
+import { ActivityType, ActivitySubject } from './adminActivity';
+import { sendError } from './adminResponse';
 
-interface ErrorOptions {
-  req: AuthRequest;
-  res: NextApiResponse;
-  error: unknown;
-  operation: string;
+interface ErrorHandlerOptions {
+  action: string;
   subject: string;
-  defaultMessage?: string;
+  errorMessage: string;
 }
 
-export async function handleAdminError({
-  req,
-  res,
-  error,
-  operation,
-  subject,
-  defaultMessage = 'An error occurred',
-}: ErrorOptions) {
-  const user = req.user;
-  const errorMessage = error instanceof Error ? error.message : defaultMessage;
+type ApiHandler = (req: NextApiRequest, res: NextApiResponse) => Promise<void | NextApiResponse>;
 
-  // Log the error
-  await logAdminError({
-    action: operation,
-    subject,
-    details: errorMessage,
-    adminName: user?.name,
-    adminId: user?._id?.toString(),
-  });
-
-  // Handle specific error types
-  if (error instanceof Error) {
-    // Mongoose validation error
-    if ((error as any).name === 'ValidationError') {
-      return res.status(400).json({
-        message: 'Validation error',
-        errors: Object.values((error as any).errors).map((err: any) => ({
-          field: err.path,
-          message: err.message,
-        })),
-      });
-    }
-
-    // Mongoose duplicate key error
-    if ((error as any).code === 11000) {
-      const field = Object.keys((error as any).keyPattern)[0];
-      return res.status(400).json({
-        message: `Duplicate ${field}`,
-        field,
-      });
-    }
-
-    // JWT errors
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        message: 'Invalid token',
-      });
-    }
-
-    if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({
-        message: 'Token expired',
-      });
-    }
-  }
-
-  // Default error response
-  console.error(`Admin API Error (${operation} ${subject}):`, error);
-  return res.status(500).json({
-    message: defaultMessage,
-    ...(process.env.NODE_ENV === 'development' && { error: errorMessage }),
-  });
-}
-
-// Helper for handling async route handlers
 export function withErrorHandler(
-  handler: (req: AuthRequest, res: NextApiResponse) => Promise<any>,
-  operation: string,
+  handler: ApiHandler,
+  action: string,
   subject: string,
-  defaultMessage?: string
-) {
-  return async (req: AuthRequest, res: NextApiResponse) => {
+  errorMessage: string
+): ApiHandler {
+  return async (req: NextApiRequest, res: NextApiResponse) => {
     try {
-      await handler(req, res);
-    } catch (error) {
-      await handleAdminError({
+      return await handler(req, res);
+    } catch (err) {
+      const error = err as Error | MongoError;
+      console.error(`Error in ${action} ${subject}:`, error);
+
+      // Log error activity
+      await logModelActivity({
         req,
-        res,
-        error,
-        operation,
-        subject,
-        defaultMessage,
+        action: ActivityType.SYSTEM_ERROR,
+        subject: ActivitySubject.SYSTEM,
+        itemName: `${action} ${subject}`,
+        details: error.message,
+      }).catch(logError => {
+        console.error('Failed to log error activity:', logError);
       });
+
+      // Handle MongoDB errors
+      if (error instanceof MongoError) {
+        if (error.code === 11000) {
+          return sendError(
+            res,
+            'A duplicate entry was found',
+            'DUPLICATE_ERROR',
+            process.env.NODE_ENV === 'development' ? error : null,
+            409
+          );
+        }
+
+        return sendError(
+          res,
+          'Database operation failed',
+          'DB_ERROR',
+          process.env.NODE_ENV === 'development' ? error : null,
+          500
+        );
+      }
+
+      // Handle validation errors
+      if (error.name === 'ValidationError') {
+        return sendError(
+          res,
+          'Invalid data provided',
+          'VALIDATION_ERROR',
+          process.env.NODE_ENV === 'development' ? error : null,
+          400
+        );
+      }
+
+      // Handle cast errors
+      if (error.name === 'CastError') {
+        return sendError(
+          res,
+          'Invalid ID format',
+          'INVALID_ID',
+          process.env.NODE_ENV === 'development' ? error : null,
+          400
+        );
+      }
+
+      // Handle other errors
+      return sendError(
+        res,
+        errorMessage,
+        'SERVER_ERROR',
+        process.env.NODE_ENV === 'development' ? error : undefined,
+        500
+      );
     }
   };
 }
 
-// Example usage:
-/*
-export default withAdminAuth(
-  withErrorHandler(
-    async (req: AuthRequest, res: NextApiResponse) => {
-      // Your route handler code here
-      const { id } = req.query;
-      const product = await Product.findById(id);
-      if (!product) {
-        return res.status(404).json({ message: 'Product not found' });
-      }
-      res.status(200).json(product);
-    },
-    'get',
-    'Product',
-    'Error fetching product'
-  )
-);
+export function handleApiError(
+  error: unknown,
+  res: NextApiResponse,
+  options: ErrorHandlerOptions
+): void | NextApiResponse {
+  console.error(`Error in ${options.action} ${options.subject}:`, error);
 
-// Or with the error handler directly:
-try {
-  // Your code here
-} catch (error) {
-  await handleAdminError({
-    req,
+  if (error instanceof MongoError) {
+    if (error.code === 11000) {
+      return sendError(
+        res,
+        'A duplicate entry was found',
+        'DUPLICATE_ERROR',
+        process.env.NODE_ENV === 'development' ? error : null,
+        409
+      );
+    }
+
+    return sendError(
+      res,
+      'Database operation failed',
+      'DB_ERROR',
+      process.env.NODE_ENV === 'development' ? error : null,
+      500
+    );
+  }
+
+  const err = error as Error;
+
+  if (err.name === 'ValidationError') {
+    return sendError(
+      res,
+      'Invalid data provided',
+      'VALIDATION_ERROR',
+      process.env.NODE_ENV === 'development' ? err : null,
+      400
+    );
+  }
+
+  if (err.name === 'CastError') {
+    return sendError(
+      res,
+      'Invalid ID format',
+      'INVALID_ID',
+      process.env.NODE_ENV === 'development' ? err : null,
+      400
+    );
+  }
+
+  return sendError(
     res,
-    error,
-    operation: 'update',
-    subject: 'Order',
-    defaultMessage: 'Error updating order',
-  });
+    options.errorMessage,
+    'SERVER_ERROR',
+    process.env.NODE_ENV === 'development' ? err : undefined,
+    500
+  );
 }
-*/

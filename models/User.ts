@@ -1,14 +1,8 @@
-import mongoose from 'mongoose';
+import mongoose, { Model } from 'mongoose';
 import { hash, compare } from 'bcryptjs';
+import { IUser, IUserMethods, IUserModel } from '../types/models';
 
-export interface IUser {
-  name: string;
-  email: string;
-  password: string;
-  role: 'user' | 'admin';
-  createdAt: Date;
-  updatedAt: Date;
-}
+type UserModelType = Model<IUser, {}, IUserMethods> & IUserModel;
 
 const userSchema = new mongoose.Schema<IUser>(
   {
@@ -21,7 +15,7 @@ const userSchema = new mongoose.Schema<IUser>(
     email: {
       type: String,
       required: [true, 'Please provide an email'],
-      unique: true, // This automatically creates an index
+      unique: true,
       match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email'],
       lowercase: true,
       trim: true,
@@ -30,24 +24,65 @@ const userSchema = new mongoose.Schema<IUser>(
       type: String,
       required: [true, 'Please provide a password'],
       minlength: [8, 'Password must be at least 8 characters long'],
-      select: false, // Don't include password by default in queries
+      select: false,
     },
     role: {
       type: String,
       enum: ['user', 'admin'],
       default: 'user',
     },
+    isBlocked: {
+      type: Boolean,
+      default: false,
+    },
+    avatar: {
+      type: String,
+    },
+    posts: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'BlogPost'
+    }],
+    favorites: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Product'
+    }],
+    cart: [{
+      product: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Product',
+        required: true
+      },
+      quantity: {
+        type: Number,
+        required: true,
+        min: 1
+      },
+      addedAt: {
+        type: Date,
+        default: Date.now
+      }
+    }],
+    orders: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Order'
+    }]
   },
   {
     timestamps: true,
   }
 );
 
-// Only create index for role since email already has an index from unique: true
+// Add indexes for common queries
+userSchema.index({ email: 1 }, { unique: true });
 userSchema.index({ role: 1 });
+userSchema.index({ isBlocked: 1 });
+userSchema.index({ createdAt: -1 });
 
-// Hash password before saving
-userSchema.pre('save', async function (next) {
+// Add compound indexes
+userSchema.index({ 'cart.product': 1, 'cart.addedAt': -1 });
+
+// Middleware
+userSchema.pre('save', async function(this: IUser & IUserMethods, next) {
   if (!this.isModified('password')) {
     return next();
   }
@@ -60,10 +95,9 @@ userSchema.pre('save', async function (next) {
   }
 });
 
-// Custom method to compare passwords
-userSchema.methods.comparePassword = async function (candidatePassword: string) {
+// Instance methods
+userSchema.methods.comparePassword = async function(this: IUser & IUserMethods, candidatePassword: string): Promise<boolean> {
   try {
-    // Use bcrypt.compare to compare the candidate password with the stored hash
     return await compare(candidatePassword, this.password);
   } catch (error) {
     console.error('Error during password comparison:', error);
@@ -71,5 +105,39 @@ userSchema.methods.comparePassword = async function (candidatePassword: string) 
   }
 };
 
-// Ensure the model isn't recreated if it already exists
-export default mongoose.models.User || mongoose.model<IUser>('User', userSchema);
+// Virtual for checking if user is admin
+userSchema.virtual('isAdmin').get(function(this: IUser) {
+  return this.role === 'admin';
+});
+
+// Instance methods for user status
+userSchema.methods.block = async function(this: IUser & IUserMethods) {
+  this.isBlocked = true;
+  return this.save();
+};
+
+userSchema.methods.unblock = async function(this: IUser & IUserMethods) {
+  this.isBlocked = false;
+  return this.save();
+};
+
+// Static methods
+userSchema.statics.findByEmail = async function(email: string) {
+  return this.findOne({ email })
+    .select('+password')
+    .exec();
+};
+
+userSchema.statics.findAdmins = async function() {
+  return this.find({ role: 'admin' })
+    .sort({ createdAt: -1 })
+    .exec();
+};
+
+// Ensure virtuals are included when converting to JSON
+userSchema.set('toJSON', { virtuals: true });
+
+const User = (mongoose.models.User as UserModelType) || 
+  mongoose.model<IUser, UserModelType>('User', userSchema);
+
+export default User;

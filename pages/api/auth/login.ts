@@ -1,52 +1,94 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import dbConnect from '../../../lib/dbConnect';
+import bcrypt from 'bcryptjs';
+import { withErrorHandler } from '../../../utils/adminErrorHandler';
+import { validateRequestAndSendError } from '../../../utils/adminValidation';
+import { ActivityType, ActivitySubject, logModelActivity, ExtendedRequest } from '../../../utils/adminActivity';
+import { sendSuccess, sendError } from '../../../utils/adminResponse';
 import User from '../../../models/User';
-import jwt from 'jsonwebtoken';
+import dbConnect from '../../../lib/dbConnect';
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse
-) {
+async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ message: 'Method not allowed' });
+    return sendError(res, 'Method not allowed', 'METHOD_NOT_ALLOWED', null, 405);
   }
 
-  try {
-    await dbConnect();
+  // Validate request body
+  const validation = validateRequestAndSendError(
+    req,
+    res,
+    [
+      {
+        key: 'email',
+        type: 'string',
+        required: true,
+        pattern: /^\S+@\S+\.\S+$/,
+      },
+      {
+        key: 'password',
+        type: 'string',
+        required: true,
+        minLength: 8,
+      },
+    ],
+    { source: 'body' }
+  );
 
+  if (validation) {
+    return validation;
+  }
+
+  await dbConnect();
+
+  try {
     const { email, password } = req.body;
 
-    // Find user and include password for comparison
+    // Find user by email
     const user = await User.findOne({ email }).select('+password');
-    
     if (!user) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return sendError(res, 'Invalid credentials', 'AUTH_ERROR', null, 401);
+    }
+
+    // Check if user is blocked
+    if (user.isBlocked) {
+      return sendError(res, 'Account is blocked', 'AUTH_ERROR', null, 403);
     }
 
     // Verify password
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return sendError(res, 'Invalid credentials', 'AUTH_ERROR', null, 401);
     }
 
-    // Generate JWT token
-    const token = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-this',
-      { expiresIn: '7d' }
-    );
+    // Create session data (exclude password)
+    const userWithoutPassword = {
+      id: user._id.toString(),
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      isBlocked: user.isBlocked,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
 
-    res.status(200).json({
-      message: 'Login successful',
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-      },
+    // Create extended request for activity logging
+    const extendedReq: ExtendedRequest = Object.assign(req, {
+      user: userWithoutPassword
     });
+
+    // Log successful login
+    await logModelActivity({
+      req: extendedReq,
+      action: ActivityType.USER_LOGIN,
+      subject: ActivitySubject.USER,
+      itemName: user.name,
+      details: `User logged in successfully`,
+    });
+
+    return sendSuccess(res, userWithoutPassword, 'Login successful');
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ message: 'Error logging in' });
+    return sendError(res, 'An error occurred during login', 'SERVER_ERROR', error, 500);
   }
 }
+
+export default withErrorHandler(handler, 'login', 'User', 'Error during login');

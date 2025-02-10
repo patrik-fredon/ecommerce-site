@@ -1,19 +1,19 @@
-import type { NextApiResponse } from 'next';
+import type { NextApiRequest, NextApiResponse } from 'next';
 import { withAdminAuth } from '../../../../middleware/adminAuth';
 import { AuthRequest } from '../../../../types/auth';
-import dbConnect from '../../../../lib/dbConnect';
-import BlogPost from '../../../../models/BlogPost';
-import { logModelActivity, logBulkActivity } from '../../../../utils/adminActivity';
+import { blogService } from '../../../../services/BlogService';
+import { logModelActivity } from '../../../../utils/adminActivity';
 import { ActivityType, ActivitySubject } from '../../../../utils/adminActivity';
+import { withCache, CacheTags, CacheConfigs } from '../../../../utils/adminCache';
 import { withErrorHandler } from '../../../../utils/adminErrorHandler';
-import { withCache, CacheTags, CacheConfigs, combineTags } from '../../../../utils/adminCache';
-import { validateRequest, validateRequestAndSendError } from '../../../../utils/adminValidation';
+import { validateRequestAndSendError } from '../../../../utils/adminValidation';
+import { ValidationMessages } from '../../../../utils/adminValidators';
 import {
   sendSuccess,
   sendError,
   sendBadRequest,
   sendMethodNotAllowed,
-  sendPaginated,
+  sendPaginated
 } from '../../../../utils/adminResponse';
 import {
   getPaginationParams,
@@ -21,104 +21,53 @@ import {
   applyFilters,
 } from '../../../../utils/adminPagination';
 
-async function blogPostsHandler(req: AuthRequest, res: NextApiResponse) {
-  const { method } = req;
-
-  await dbConnect();
-
-  switch (method) {
+async function handler(req: AuthRequest, res: NextApiResponse) {
+  switch (req.method) {
     case 'GET':
       try {
         const { skip, limit, page, sort } = getPaginationParams(req, {
-          defaultLimit: 20,
-          maxLimit: 50,
+          defaultLimit: 10,
+          maxLimit: 50
         });
 
         const query = buildQuery(req, {
           search: {
-            fields: ['title', 'content', 'excerpt', 'author'],
+            fields: ['title', 'content', 'author'],
             term: req.query.search as string,
           },
           dateRange: {
-            field: 'publishedAt',
+            field: 'createdAt',
             start: req.query.startDate ? new Date(req.query.startDate as string) : undefined,
             end: req.query.endDate ? new Date(req.query.endDate as string) : undefined,
           },
         });
 
         const filters = applyFilters(req, [
-          { 
-            field: 'published', 
-            values: ['true', 'false'], 
-            type: 'boolean' 
-          },
-          { 
-            field: 'author', 
-            values: [], // Dynamic values from actual authors
-            type: 'exact' 
-          }
+          { field: 'published', values: ['true', 'false'], type: 'boolean' },
+          { field: 'author', values: req.query.author ? [req.query.author as string] : [], type: 'exact' }
         ]);
-
-        const finalQuery = { ...query, ...filters };
 
         const [posts, total] = await Promise.all([
-          BlogPost.find(finalQuery)
-            .sort(sort)
-            .skip(skip)
-            .limit(limit)
-            .lean(),
-          BlogPost.countDocuments(finalQuery),
-        ]);
-
-        // Get blog statistics
-        const [stats] = await BlogPost.aggregate([
-          {
-            $group: {
-              _id: null,
-              totalPosts: { $sum: 1 },
-              publishedPosts: { $sum: { $cond: ['$published', 1, 0] } },
-              avgWordCount: {
-                $avg: {
-                  $size: { $split: ['$content', ' '] }
-                }
-              },
-              authors: { $addToSet: '$author' },
-            }
-          },
-          {
-            $project: {
-              _id: 0,
-              totalPosts: 1,
-              publishedPosts: 1,
-              avgWordCount: { $round: ['$avgWordCount', 0] },
-              uniqueAuthors: { $size: '$authors' },
-            }
-          }
+          blogService.find(
+            { ...query, ...filters },
+            { skip, limit, sort }
+          ),
+          blogService.count({ ...query, ...filters })
         ]);
 
         return sendPaginated(res, posts, {
           page,
           limit,
           total,
-          message: 'Blog posts retrieved successfully',
-          meta: {
-            stats: stats || {
-              totalPosts: 0,
-              publishedPosts: 0,
-              avgWordCount: 0,
-              uniqueAuthors: 0,
-            },
-            filters: req.query,
-          },
+          message: 'Blog posts retrieved successfully'
         });
       } catch (error) {
         throw error;
       }
-      break;
 
     case 'POST':
       try {
-        const postValidation = validateRequestAndSendError(
+        const validation = validateRequestAndSendError(
           req,
           res,
           [
@@ -126,158 +75,75 @@ async function blogPostsHandler(req: AuthRequest, res: NextApiResponse) {
               field: 'title',
               type: 'string',
               required: true,
-              min: 5,
+              min: 3,
               max: 200,
+              message: ValidationMessages.MIN_LENGTH(3)
             },
             {
               field: 'content',
               type: 'string',
               required: true,
-              min: 50,
+              min: 10,
+              message: ValidationMessages.MIN_LENGTH(10)
             },
             {
               field: 'excerpt',
               type: 'string',
               required: true,
-              min: 10,
               max: 500,
+              message: ValidationMessages.MAX_LENGTH(500)
             },
             {
-              field: 'slug',
+              field: 'author',
               type: 'string',
-              pattern: /^[a-z0-9-]+$/,
+              required: true
+            },
+            {
+              field: 'image',
+              type: 'string',
+              required: true,
+              message: 'Featured image URL is required'
             },
             {
               field: 'published',
-              type: 'boolean',
-            },
+              type: 'boolean'
+            }
           ],
-          { source: 'body', allowUnknown: false }
+          { source: 'body' }
         );
 
-        if (postValidation) {
-          return postValidation;
+        if (validation) {
+          return validation;
         }
 
-        // Generate slug if not provided
-        if (!req.body.slug) {
-          req.body.slug = req.body.title
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/(^-|-$)+/g, '');
-        }
-
-        const post = await BlogPost.create({
+        const post = await blogService.create({
           ...req.body,
-          author: req.user?.name || 'Admin',
+          publishedAt: req.body.published ? new Date() : undefined
         });
 
         await logModelActivity({
           req,
           action: ActivityType.BLOG_CREATED,
           subject: ActivitySubject.BLOG,
-          itemName: post.title,
+          itemName: post.title
         });
 
         return sendSuccess(res, post, 'Blog post created successfully', undefined, 201);
       } catch (error) {
         throw error;
       }
-      break;
-
-    case 'PATCH':
-      try {
-        const { operation } = req.body;
-
-        if (!operation) {
-          return sendBadRequest(res, 'Operation not specified');
-        }
-
-        switch (operation) {
-          case 'bulk-publish':
-            const { postIds, publish } = req.body;
-            const bulkValidation = validateRequestAndSendError(
-              req,
-              res,
-              [
-                {
-                  field: 'postIds',
-                  type: 'array',
-                  required: true,
-                  min: 1,
-                },
-                {
-                  field: 'publish',
-                  type: 'boolean',
-                  required: true,
-                },
-              ],
-              { source: 'body', allowUnknown: false }
-            );
-
-            if (bulkValidation) {
-              return bulkValidation;
-            }
-
-            // Validate each post ID
-            for (const id of postIds) {
-              if (!/^[0-9a-fA-F]{24}$/.test(id)) {
-                return sendBadRequest(res, 'Invalid post ID format', [{
-                  field: 'postIds',
-                  message: `Invalid ID format: ${id}`,
-                }]);
-              }
-            }
-
-            const updateData = publish
-              ? { published: true, publishedAt: new Date() }
-              : { published: false, $unset: { publishedAt: 1 } };
-
-            const updatedPosts = await BlogPost.updateMany(
-              { _id: { $in: postIds } },
-              publish ? { $set: updateData } : updateData
-            );
-
-            await logBulkActivity({
-              req,
-              action: publish ? ActivityType.BULK_PUBLISH : ActivityType.BULK_UNPUBLISH,
-              subject: ActivitySubject.BLOG,
-              count: postIds.length,
-            });
-
-            return sendSuccess(
-              res,
-              { modifiedCount: updatedPosts.modifiedCount },
-              `Successfully ${publish ? 'published' : 'unpublished'} ${updatedPosts.modifiedCount} posts`
-            );
-
-          default:
-            return sendBadRequest(res, 'Invalid operation');
-        }
-      } catch (error) {
-        throw error;
-      }
-      break;
 
     default:
-      return sendMethodNotAllowed(res, ['GET', 'POST', 'PATCH']);
+      return sendMethodNotAllowed(res, ['GET', 'POST']);
   }
 }
 
 export default withAdminAuth(
   withCache(
-    withErrorHandler(
-      blogPostsHandler,
-      'manage',
-      'Blog Posts',
-      'Error managing blog posts'
-    ),
+    withErrorHandler(handler, 'manage', 'Blog Posts', 'Error managing blog posts'),
     {
-      ...CacheConfigs.mediumTerm,
-      tags: combineTags(
-        [CacheTags.BLOG],
-        [CacheTags.STATS]
-      ),
+      ...CacheConfigs.shortTerm,
+      tags: [CacheTags.BLOG]
     }
   )
 );

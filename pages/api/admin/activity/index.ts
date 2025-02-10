@@ -1,44 +1,92 @@
-import type { NextApiResponse } from 'next';
+import { NextApiResponse } from 'next';
+import { Types } from 'mongoose';
 import { withAdminAuth } from '../../../../middleware/adminAuth';
 import { AuthRequest } from '../../../../types/auth';
-import dbConnect from '../../../../lib/dbConnect';
-import ActivityLog from '../../../../models/ActivityLog';
-import { withCache, CacheTags } from '../../../../utils/adminCache';
+import { activityLogService } from '../../../../services/ActivityLogService';
+import { withAuthCache, CacheTags, CacheConfigs } from '../../../../utils/cache/adminCache';
+import { withErrorHandler } from '../../../../utils/adminErrorHandler';
+import { validateRequestAndSendError } from '../../../../utils/adminValidation';
+import { ActivityValidators } from '../../../../utils/adminValidators';
+import { sendSuccess, sendMethodNotAllowed } from '../../../../utils/adminResponse';
 
-async function activityHandler(req: AuthRequest, res: NextApiResponse) {
-  if (req.method !== 'GET') {
-    res.setHeader('Allow', ['GET']);
-    res.status(405).end(`Method ${req.method} Not Allowed`);
-    return;
-  }
+async function handler(req: AuthRequest, res: NextApiResponse): Promise<void | NextApiResponse> {
+  switch (req.method) {
+    case 'GET': {
+      const { 
+        limit = '20',
+        stats = 'false',
+        timeline = 'false',
+        subjectCounts = 'false',
+        timelineDays = '30'
+      } = req.query;
 
-  try {
-    await dbConnect();
+      // Parse query parameters
+      const parsedLimit = Math.min(Math.max(1, parseInt(limit as string, 10)), 100);
+      const parsedTimelineDays = Math.min(Math.max(1, parseInt(timelineDays as string, 10)), 365);
+      const shouldGetStats = stats === 'true';
+      const shouldGetTimeline = timeline === 'true';
+      const shouldGetSubjectCounts = subjectCounts === 'true';
 
-    // Get the latest 20 activities
-    const activities = await ActivityLog.find({})
-      .sort({ createdAt: -1 })
-      .limit(20)
-      .populate('userId', 'name email')
-      .lean();
+      // Fetch activities and optional statistics concurrently
+      const [activities, statsData, timelineData, subjectCountsData] = await Promise.all([
+        activityLogService.findRecent(parsedLimit),
+        shouldGetStats ? activityLogService.getActivityStats() : null,
+        shouldGetTimeline ? activityLogService.getActivityTimeline(parsedTimelineDays) : null,
+        shouldGetSubjectCounts ? activityLogService.getActivityCountsBySubject() : null,
+      ]);
 
-    res.status(200).json({
-      activities,
-      message: 'Activities retrieved successfully'
-    });
-  } catch (err) {
-    const error = err as Error;
-    console.error('Error fetching activities:', error);
-    res.status(500).json({
-      error: 'Failed to fetch activities',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+      // Build response data
+      const responseData = {
+        activities,
+        ...(shouldGetStats && { stats: statsData }),
+        ...(shouldGetTimeline && { timeline: timelineData }),
+        ...(shouldGetSubjectCounts && { subjectCounts: subjectCountsData }),
+      };
+
+      return sendSuccess(res, responseData, 'Activities retrieved successfully');
+    }
+
+    case 'POST': {
+      // Validate request body
+      const validation = validateRequestAndSendError(
+        req,
+        res,
+        [
+          ActivityValidators.action,
+          ActivityValidators.subject,
+          ActivityValidators.itemName,
+          ActivityValidators.details,
+        ],
+        { source: 'body' }
+      );
+
+      if (validation) {
+        return validation;
+      }
+
+      // Create activity log
+      const activity = await activityLogService.create({
+        userId: new Types.ObjectId(req.user!.id),
+        action: req.body.action,
+        subject: req.body.subject,
+        itemName: req.body.itemName,
+        details: req.body.details,
+      });
+
+      return sendSuccess(res, activity, 'Activity logged successfully', undefined, 201);
+    }
+
+    default:
+      return sendMethodNotAllowed(res, ['GET', 'POST']);
   }
 }
 
 export default withAdminAuth(
-  withCache(activityHandler, {
-    maxAge: 30, // Cache for 30 seconds
-    tags: [CacheTags.STATS],
-  })
+  withAuthCache(
+    withErrorHandler(handler, 'manage', 'Activity Log', 'Error managing activity logs'),
+    {
+      ...CacheConfigs.shortTerm,
+      tags: [CacheTags.ACTIVITY]
+    }
+  )
 );

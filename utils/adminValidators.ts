@@ -1,184 +1,215 @@
-import { NextApiResponse } from 'next';
-import { sendBadRequest } from './adminResponse';
+import { ValidationRule } from './adminValidation';
+import { ActivityType, ActivitySubject } from './adminActivity';
 
-// MongoDB ObjectId regex pattern
-const OBJECT_ID_PATTERN = /^[0-9a-fA-F]{24}$/;
-
-// Validate a single MongoDB ObjectId
-export function isValidObjectId(id: string): boolean {
-  return OBJECT_ID_PATTERN.test(id);
-}
-
-// Validate an array of MongoDB ObjectIds
-export function validateObjectIds(
-  ids: string[],
-  fieldName: string = 'id'
-): { valid: boolean; errors?: { field: string; message: string }[] } {
-  const invalidIds = ids.filter(id => !isValidObjectId(id));
-  
-  if (invalidIds.length > 0) {
-    return {
-      valid: false,
-      errors: invalidIds.map(id => ({
-        field: fieldName,
-        message: `Invalid ID format: ${id}`,
-      })),
-    };
-  }
-
-  return { valid: true };
-}
-
-// Helper to validate and send error response for MongoDB ObjectIds
-export function validateAndSendIdErrors(
-  res: NextApiResponse,
-  ids: string[],
-  fieldName: string = 'id'
-): boolean {
-  const validation = validateObjectIds(ids, fieldName);
-  if (!validation.valid && validation.errors) {
-    sendBadRequest(res, `Invalid ${fieldName} format`, validation.errors);
-    return true;
-  }
-  return false;
-}
-
-// Common validation rules for MongoDB ObjectIds
-export const ObjectIdRule = {
-  type: 'string',
-  pattern: OBJECT_ID_PATTERN,
-  message: 'Invalid ID format',
-} as const;
-
-// Common validation rules for arrays of MongoDB ObjectIds
-export const ObjectIdArrayRule = {
-  type: 'array',
-  items: ObjectIdRule,
-  message: 'Invalid ID format in array',
-} as const;
-
-// Helper to create a validation rule for references
-export function createReferenceRule(
-  model: string,
-  required: boolean = true
-): { type: string; required: boolean; pattern: RegExp; message: string } {
-  return {
+export const CommonValidators = {
+  name: {
+    key: 'name',
     type: 'string',
-    required,
-    pattern: OBJECT_ID_PATTERN,
-    message: `Invalid ${model} reference ID`,
-  };
-}
+    required: true,
+    minLength: 2,
+    maxLength: 50,
+  } as ValidationRule,
 
-// Helper to create a validation rule for arrays of references
-export function createReferenceArrayRule(
-  model: string,
-  required: boolean = true,
-  minItems?: number,
-  maxItems?: number
-): {
-  type: string;
-  required: boolean;
-  items: { type: string; pattern: RegExp };
-  minItems?: number;
-  maxItems?: number;
-  message: string;
-} {
-  return {
+  email: {
+    key: 'email',
+    type: 'string',
+    required: true,
+    pattern: /^\S+@\S+\.\S+$/,
+    maxLength: 255,
+  } as ValidationRule,
+
+  password: {
+    key: 'password',
+    type: 'string',
+    required: true,
+    minLength: 8,
+    maxLength: 100,
+  } as ValidationRule,
+
+  description: {
+    key: 'description',
+    type: 'string',
+    maxLength: 1000,
+  } as ValidationRule,
+
+  slug: {
+    key: 'slug',
+    type: 'string',
+    required: true,
+    pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
+    maxLength: 100,
+  } as ValidationRule,
+
+  price: {
+    key: 'price',
+    type: 'number',
+    required: true,
+    minValue: 0,
+  } as ValidationRule,
+
+  quantity: {
+    key: 'quantity',
+    type: 'number',
+    required: true,
+    minValue: 0,
+  } as ValidationRule,
+
+  status: {
+    key: 'status',
+    type: 'string',
+    required: true,
+    enum: ['draft', 'published', 'archived'],
+  } as ValidationRule,
+
+  tags: {
+    key: 'tags',
     type: 'array',
-    required,
-    items: {
-      type: 'string',
-      pattern: OBJECT_ID_PATTERN,
+  } as ValidationRule,
+
+  metadata: {
+    key: 'metadata',
+    type: 'object',
+  } as ValidationRule,
+};
+
+export const ActivityValidators = {
+  action: {
+    key: 'action',
+    type: 'string',
+    required: true,
+    enum: Object.values(ActivityType),
+  } as ValidationRule,
+
+  subject: {
+    key: 'subject',
+    type: 'string',
+    required: true,
+    enum: Object.values(ActivitySubject),
+  } as ValidationRule,
+
+  itemName: {
+    key: 'itemName',
+    type: 'string',
+    maxLength: 200,
+  } as ValidationRule,
+
+  details: {
+    key: 'details',
+    type: 'string',
+    maxLength: 1000,
+  } as ValidationRule,
+};
+
+export const BlogValidators = {
+  title: {
+    key: 'title',
+    type: 'string',
+    required: true,
+    minLength: 3,
+    maxLength: 200,
+  } as ValidationRule,
+
+  content: {
+    key: 'content',
+    type: 'string',
+    required: true,
+    minLength: 10,
+  } as ValidationRule,
+
+  excerpt: {
+    key: 'excerpt',
+    type: 'string',
+    maxLength: 500,
+  } as ValidationRule,
+
+  author: {
+    key: 'author',
+    type: 'string',
+    required: true,
+  } as ValidationRule,
+
+  categories: {
+    key: 'categories',
+    type: 'array',
+  } as ValidationRule,
+
+  featuredImage: {
+    key: 'featuredImage',
+    type: 'string',
+    pattern: /^https?:\/\/.+/,
+  } as ValidationRule,
+};
+
+export const ProductValidators = {
+  title: {
+    key: 'title',
+    type: 'string',
+    required: true,
+    minLength: 3,
+    maxLength: 200,
+  } as ValidationRule,
+
+  description: CommonValidators.description,
+  price: CommonValidators.price,
+  quantity: CommonValidators.quantity,
+
+  sku: {
+    key: 'sku',
+    type: 'string',
+    required: true,
+    pattern: /^[A-Z0-9-]+$/,
+    maxLength: 50,
+  } as ValidationRule,
+
+  categories: {
+    key: 'categories',
+    type: 'array',
+  } as ValidationRule,
+
+  images: {
+    key: 'images',
+    type: 'array',
+    custom: (value: any[]) => {
+      if (!Array.isArray(value)) return false;
+      return value.every(url => typeof url === 'string' && /^https?:\/\/.+/.test(url));
     },
-    ...(minItems !== undefined && { minItems }),
-    ...(maxItems !== undefined && { maxItems }),
-    message: `Invalid ${model} reference IDs`,
-  };
-}
+  } as ValidationRule,
 
-// Example usage:
-/*
-// Validate a single ID
-if (!isValidObjectId(id)) {
-  return sendBadRequest(res, 'Invalid ID format', [{
-    field: 'id',
-    message: `Invalid ID format: ${id}`,
-  }]);
-}
+  specifications: {
+    key: 'specifications',
+    type: 'object',
+  } as ValidationRule,
+};
 
-// Validate multiple IDs
-const validation = validateObjectIds(productIds, 'productId');
-if (!validation.valid) {
-  return sendBadRequest(res, 'Invalid product ID format', validation.errors);
-}
+export const SettingsValidators = {
+  siteName: {
+    key: 'siteName',
+    type: 'string',
+    required: true,
+    minLength: 2,
+    maxLength: 100,
+  } as ValidationRule,
 
-// Validate and send error response
-if (validateAndSendIdErrors(res, orderIds, 'orderId')) {
-  return;
-}
+  siteDescription: {
+    key: 'siteDescription',
+    type: 'string',
+    maxLength: 500,
+  } as ValidationRule,
 
-// Use in validation rules
-const validationRules = [
-  {
-    field: 'productId',
-    ...ObjectIdRule,
-  },
-  {
-    field: 'categoryIds',
-    ...ObjectIdArrayRule,
-  },
-  {
-    field: 'userId',
-    ...createReferenceRule('User'),
-  },
-  {
-    field: 'roleIds',
-    ...createReferenceArrayRule('Role', true, 1, 5),
-  },
-];
-*/
+  contactEmail: CommonValidators.email,
 
-// Common validation patterns
-export const ValidationPatterns = {
-  // String patterns
-  SLUG: /^[a-z0-9-]+$/,
-  USERNAME: /^[a-zA-Z0-9_-]{3,20}$/,
-  PASSWORD: /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]{8,}$/,
-  EMAIL: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-  PHONE: /^\+?[\d\s-]{10,}$/,
-  URL: /^https?:\/\/[\w\-]+(\.[\w\-]+)+[/#?]?.*$/,
-  SKU: /^[A-Z0-9-]+$/,
-  COLOR_HEX: /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/,
-  
-  // Number patterns
-  POSITIVE_INT: /^\d+$/,
-  DECIMAL: /^\d*\.?\d+$/,
-  PERCENTAGE: /^(100|[1-9]?\d)$/,
-  CURRENCY: /^\d+\.?\d{0,2}$/,
-  
-  // Date patterns
-  DATE_ISO: /^\d{4}-\d{2}-\d{2}$/,
-  DATETIME_ISO: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$/,
-  
-  // Custom patterns
-  TAGS: /^[a-zA-Z0-9-]+(,[a-zA-Z0-9-]+)*$/,
-  DIMENSIONS: /^\d+x\d+x\d+$/,
-  COORDINATES: /^-?\d+\.?\d*,-?\d+\.?\d*$/,
-} as const;
+  socialLinks: {
+    key: 'socialLinks',
+    type: 'object',
+    custom: (value: any) => {
+      if (typeof value !== 'object' || value === null) return false;
+      return Object.values(value).every(url => typeof url === 'string' && /^https?:\/\/.+/.test(url));
+    },
+  } as ValidationRule,
 
-// Common validation messages
-export const ValidationMessages = {
-  REQUIRED: 'This field is required',
-  INVALID_FORMAT: 'Invalid format',
-  MIN_LENGTH: (min: number) => `Must be at least ${min} characters`,
-  MAX_LENGTH: (max: number) => `Must be at most ${max} characters`,
-  MIN_VALUE: (min: number) => `Must be at least ${min}`,
-  MAX_VALUE: (max: number) => `Must be at most ${max}`,
-  MIN_ITEMS: (min: number) => `Must have at least ${min} items`,
-  MAX_ITEMS: (max: number) => `Must have at most ${max} items`,
-  INVALID_ENUM: (values: string[]) => `Must be one of: ${values.join(', ')}`,
-  INVALID_TYPE: (type: string) => `Must be a ${type}`,
-  DUPLICATE: (field: string) => `${field} already exists`,
-  NOT_FOUND: (resource: string) => `${resource} not found`,
-} as const;
+  theme: {
+    key: 'theme',
+    type: 'string',
+    enum: ['light', 'dark', 'system'],
+  } as ValidationRule,
+};

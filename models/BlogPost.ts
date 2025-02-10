@@ -1,23 +1,23 @@
-import mongoose from 'mongoose';
+import mongoose, { Model } from 'mongoose';
+import { IBlogPost, IBlogPostMethods, IBlogPostModel, IComment } from '../types/models';
 
-export interface IBlogPost extends mongoose.Document {
-  title: string;
-  excerpt: string;
-  content: string;
-  author: string;
-  date: Date;
-  image: string;
-  slug: string;
-  published: boolean;
-  publishedAt?: Date;
-}
+type BlogPostModelType = Model<IBlogPost, {}, IBlogPostMethods> & IBlogPostModel;
 
-interface IBlogPostModel extends mongoose.Model<IBlogPost> {
-  findPublished(): Promise<IBlogPost[]>;
-  findBySlug(slug: string): Promise<IBlogPost | null>;
-}
+const commentSchema = new mongoose.Schema<IComment>({
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  content: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: [1000, 'Comment cannot be more than 1000 characters']
+  }
+}, { timestamps: true });
 
-const blogPostSchema = new mongoose.Schema<IBlogPost, IBlogPostModel>(
+const blogPostSchema = new mongoose.Schema<IBlogPost>(
   {
     title: {
       type: String,
@@ -35,10 +35,19 @@ const blogPostSchema = new mongoose.Schema<IBlogPost, IBlogPostModel>(
       required: [true, 'Please provide blog post content'],
     },
     author: {
-      type: String,
-      required: [true, 'Please provide an author name'],
-      trim: true,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: [true, 'Please provide an author ID'],
     },
+    tags: [{
+      type: String,
+      trim: true
+    }],
+    likes: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    }],
+    comments: [commentSchema],
     date: {
       type: Date,
       default: Date.now,
@@ -71,27 +80,94 @@ blogPostSchema.index({ date: -1 });
 blogPostSchema.index({ author: 1 });
 blogPostSchema.index({ published: 1, publishedAt: -1 });
 
+// Instance methods
+blogPostSchema.methods.publish = async function(this: mongoose.Document & IBlogPost) {
+  this.published = true;
+  this.publishedAt = new Date();
+  return this.save();
+};
+
+blogPostSchema.methods.unpublish = async function(this: mongoose.Document & IBlogPost) {
+  this.published = false;
+  this.publishedAt = undefined;
+  return this.save();
+};
+
+blogPostSchema.methods.addComment = async function(this: mongoose.Document & IBlogPost, userId: mongoose.Types.ObjectId, content: string) {
+  this.comments = this.comments || [];
+  this.comments.push({
+    user: userId,
+    content,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  });
+  return this.save();
+};
+
+blogPostSchema.methods.removeComment = async function(this: mongoose.Document & IBlogPost, commentId: mongoose.Types.ObjectId) {
+  if (!this.comments) return this;
+  this.comments = this.comments.filter(comment => comment._id && !comment._id.equals(commentId));
+  return this.save();
+};
+
 // Static methods
-blogPostSchema.statics.findPublished = function() {
-  return this.find({ published: true })
-    .sort({ publishedAt: -1 })
-    .exec();
+// Static methods
+blogPostSchema.statics = {
+  findPublished: function() {
+    return this.find({ published: true })
+      .sort({ publishedAt: -1 })
+      .populate('author', 'name')
+      .populate('comments.user', 'name')
+      .exec();
+  },
+
+  findBySlug: function(slug: string) {
+    return this.findOne({ slug, published: true })
+      .populate('author', 'name')
+      .populate('comments.user', 'name')
+      .exec();
+  },
+
+  findByAuthor: function(authorId: mongoose.Types.ObjectId) {
+    return this.find({ author: authorId })
+      .sort({ createdAt: -1 })
+      .populate('comments.user', 'name')
+      .exec();
+  }
 };
 
-blogPostSchema.statics.findBySlug = function(slug: string) {
-  return this.findOne({ slug, published: true })
-    .exec();
-};
-
-// Create slug from title if not provided
+// Middleware
 blogPostSchema.pre('save', function(next) {
+  // Create slug from title if not provided
   if (!this.slug) {
     this.slug = this.title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)+/g, '');
   }
+
+  // Set publishedAt date when post is published
+  if (this.published && !this.publishedAt) {
+    this.publishedAt = new Date();
+  }
+
   next();
 });
 
-export default mongoose.models.BlogPost || mongoose.model<IBlogPost, IBlogPostModel>('BlogPost', blogPostSchema);
+// Virtual for comment count
+blogPostSchema.virtual('commentCount').get(function(this: IBlogPost) {
+  return this.comments?.length || 0;
+});
+
+// Virtual for like count
+blogPostSchema.virtual('likeCount').get(function(this: IBlogPost) {
+  return this.likes?.length || 0;
+});
+
+// Ensure virtuals are included when converting to JSON
+blogPostSchema.set('toJSON', { virtuals: true });
+
+const BlogPost = (mongoose.models.BlogPost as BlogPostModelType) ||
+  mongoose.model<IBlogPost, BlogPostModelType>('BlogPost', blogPostSchema);
+
+export default BlogPost;
