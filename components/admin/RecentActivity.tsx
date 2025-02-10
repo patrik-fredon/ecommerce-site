@@ -1,18 +1,14 @@
 import { useEffect, useState } from 'react';
-import {
-  UserIcon,
-  ShoppingCartIcon,
-  DocumentTextIcon,
-  ExclamationCircleIcon,
-} from '@heroicons/react/24/outline';
+import { format } from 'date-fns';
 
 interface Activity {
-  id: string;
-  type: 'user' | 'product' | 'blog' | 'system';
+  _id: string;
+  userId: string;
   action: string;
   subject: string;
-  timestamp: string;
+  itemName?: string;
   details?: string;
+  createdAt: string;
 }
 
 export default function RecentActivity() {
@@ -20,143 +16,113 @@ export default function RecentActivity() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const fetchActivities = async () => {
-      try {
-        const response = await fetch('/api/admin/activity?limit=10');
-        if (!response.ok) throw new Error('Failed to fetch activities');
-        const data = await response.json();
-        setActivities(data.map((activity: any) => ({
-          id: activity._id,
-          type: activity.type,
-          action: activity.action,
-          subject: activity.subject,
-          timestamp: activity.timestamp,
-          details: activity.details,
-        })));
-      } catch (err) {
-        console.error('Error fetching activities:', err);
-        setError(err instanceof Error ? err.message : 'Error fetching activities');
-      } finally {
-        setIsLoading(false);
+  async function fetchActivities() {
+    try {
+      setIsLoading(true);
+      setError(null);
+      const response = await fetch('/api/admin/activity');
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
-    };
-
-    fetchActivities();
-
-    // Set up auto-refresh every minute
-    const intervalId = setInterval(fetchActivities, 60000);
-
-    return () => clearInterval(intervalId);
-  }, []);
-
-  const getIcon = (type: Activity['type']) => {
-    switch (type) {
-      case 'user':
-        return UserIcon;
-      case 'product':
-        return ShoppingCartIcon;
-      case 'blog':
-        return DocumentTextIcon;
-      case 'system':
-        return ExclamationCircleIcon;
+      
+      const data = await response.json();
+      setActivities(data.activities || []);
+    } catch (err) {
+      console.error('Error fetching activities:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch activities');
+    } finally {
+      setIsLoading(false);
     }
-  };
-
-  const getTimeAgo = (timestamp: string) => {
-    const seconds = Math.floor(
-      (new Date().getTime() - new Date(timestamp).getTime()) / 1000
-    );
-
-    let interval = seconds / 31536000;
-    if (interval > 1) return Math.floor(interval) + ' years ago';
-    interval = seconds / 2592000;
-    if (interval > 1) return Math.floor(interval) + ' months ago';
-    interval = seconds / 86400;
-    if (interval > 1) return Math.floor(interval) + ' days ago';
-    interval = seconds / 3600;
-    if (interval > 1) return Math.floor(interval) + ' hours ago';
-    interval = seconds / 60;
-    if (interval > 1) return Math.floor(interval) + ' minutes ago';
-    return Math.floor(seconds) + ' seconds ago';
-  };
-
-  if (error) {
-    return (
-      <div className="text-center py-6 text-red-600">
-        {error}
-      </div>
-    );
   }
+
+  useEffect(() => {
+    fetchActivities();
+    // Refresh activities every 30 seconds
+    const interval = setInterval(fetchActivities, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   if (isLoading) {
     return (
-      <div className="animate-pulse space-y-4">
-        {[...Array(3)].map((_, i) => (
-          <div key={i} className="flex items-center space-x-3">
-            <div className="h-10 w-10 bg-gray-200 rounded-full"></div>
-            <div className="flex-1">
-              <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
-              <div className="h-3 bg-gray-200 rounded w-1/2"></div>
-            </div>
-          </div>
-        ))}
+      <div className="p-4 bg-white rounded-lg shadow">
+        <h2 className="text-lg font-semibold mb-4">Recent Activity</h2>
+        <div className="animate-pulse space-y-3">
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="h-12 bg-gray-100 rounded"></div>
+          ))}
+        </div>
       </div>
     );
   }
 
-  if (!activities || activities.length === 0) {
+  if (error) {
     return (
-      <div className="text-center py-6 text-gray-500">
-        No recent activity to display
+      <div className="p-4 bg-white rounded-lg shadow">
+        <h2 className="text-lg font-semibold mb-4">Recent Activity</h2>
+        <div className="text-red-500 p-4 bg-red-50 rounded">
+          {error}
+          <button
+            onClick={fetchActivities}
+            className="ml-2 text-sm text-red-700 hover:text-red-900 underline"
+          >
+            Try again
+          </button>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flow-root">
-      <ul className="-mb-8">
-        {activities.map((activity, index) => {
-          const Icon = getIcon(activity.type);
-          return (
-            <li key={activity.id}>
-              <div className="relative pb-8">
-                {index < activities.length - 1 && (
-                  <span
-                    className="absolute top-5 left-5 -ml-px h-full w-0.5 bg-gray-200"
-                    aria-hidden="true"
-                  />
-                )}
-                <div className="relative flex items-start space-x-3">
-                  <div className="relative">
-                    <div className="h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center ring-8 ring-white">
-                      <Icon className="h-5 w-5 text-gray-500" aria-hidden="true" />
-                    </div>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div>
-                      <div className="text-sm">
-                        <span className="font-medium text-gray-900">
-                          {activity.subject}
-                        </span>{' '}
-                        <span className="text-gray-500">{activity.action}</span>
-                      </div>
-                      <p className="mt-0.5 text-sm text-gray-500">
-                        {getTimeAgo(activity.timestamp)}
-                      </p>
-                    </div>
-                    {activity.details && (
-                      <div className="mt-2 text-sm text-gray-700">
-                        {activity.details}
-                      </div>
-                    )}
-                  </div>
+    <div className="p-4 bg-white rounded-lg shadow">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-lg font-semibold">Recent Activity</h2>
+        <button
+          onClick={fetchActivities}
+          className="text-sm text-blue-600 hover:text-blue-800"
+        >
+          Refresh
+        </button>
+      </div>
+      
+      {activities.length === 0 ? (
+        <p className="text-gray-500 text-center py-4">No recent activity</p>
+      ) : (
+        <div className="space-y-4">
+          {activities.map((activity) => (
+            <div
+              key={activity._id}
+              className="flex items-start space-x-3 p-3 hover:bg-gray-50 rounded-lg transition-colors"
+            >
+              <div className="flex-shrink-0">
+                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                  <span className="text-blue-600 text-sm">
+                    {activity.subject.charAt(0).toUpperCase()}
+                  </span>
                 </div>
               </div>
-            </li>
-          );
-        })}
-      </ul>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-gray-900">
+                  {activity.action}{' '}
+                  <span className="font-medium">{activity.subject}</span>
+                  {activity.itemName && (
+                    <>
+                      {': '}
+                      <span className="font-medium">{activity.itemName}</span>
+                    </>
+                  )}
+                </p>
+                {activity.details && (
+                  <p className="mt-0.5 text-sm text-gray-500">{activity.details}</p>
+                )}
+                <p className="mt-0.5 text-xs text-gray-400">
+                  {format(new Date(activity.createdAt), 'MMM d, yyyy HH:mm')}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

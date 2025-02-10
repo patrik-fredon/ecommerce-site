@@ -1,52 +1,50 @@
 import mongoose from 'mongoose';
-import bcrypt from 'bcryptjs';
+import { hash, compare } from 'bcryptjs';
 
-export interface IUser extends mongoose.Document {
+export interface IUser {
   name: string;
   email: string;
   password: string;
   role: 'user' | 'admin';
-  isBlocked?: boolean;
   createdAt: Date;
   updatedAt: Date;
-  comparePassword(candidatePassword: string): Promise<boolean>;
 }
 
-const userSchema = new mongoose.Schema(
+const userSchema = new mongoose.Schema<IUser>(
   {
     name: {
       type: String,
       required: [true, 'Please provide a name'],
-      trim: true,
-      maxlength: [50, 'Name cannot be more than 50 characters'],
+      minlength: [2, 'Name must be at least 2 characters long'],
+      maxlength: [50, 'Name cannot be more than 50 characters long'],
     },
     email: {
       type: String,
       required: [true, 'Please provide an email'],
-      unique: true,
-      match: [
-        /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
-        'Please provide a valid email',
-      ],
+      unique: true, // This automatically creates an index
+      match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email'],
+      lowercase: true,
+      trim: true,
     },
     password: {
       type: String,
       required: [true, 'Please provide a password'],
-      minlength: [6, 'Password must be at least 6 characters'],
-      select: false,
+      minlength: [8, 'Password must be at least 8 characters long'],
+      select: false, // Don't include password by default in queries
     },
     role: {
       type: String,
       enum: ['user', 'admin'],
       default: 'user',
     },
-    isBlocked: {
-      type: Boolean,
-      default: false,
-    },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+  }
 );
+
+// Only create index for role since email already has an index from unique: true
+userSchema.index({ role: 1 });
 
 // Hash password before saving
 userSchema.pre('save', async function (next) {
@@ -54,16 +52,24 @@ userSchema.pre('save', async function (next) {
     return next();
   }
 
-  const salt = await bcrypt.genSalt(10);
-  this.password = await bcrypt.hash(this.password, salt);
-  next();
+  try {
+    this.password = await hash(this.password, 10);
+    next();
+  } catch (error) {
+    next(error as Error);
+  }
 });
 
-// Compare password method
-userSchema.methods.comparePassword = async function (
-  candidatePassword: string
-): Promise<boolean> {
-  return await bcrypt.compare(candidatePassword, this.password);
+// Custom method to compare passwords
+userSchema.methods.comparePassword = async function (candidatePassword: string) {
+  try {
+    // Use bcrypt.compare to compare the candidate password with the stored hash
+    return await compare(candidatePassword, this.password);
+  } catch (error) {
+    console.error('Error during password comparison:', error);
+    return false;
+  }
 };
 
+// Ensure the model isn't recreated if it already exists
 export default mongoose.models.User || mongoose.model<IUser>('User', userSchema);
