@@ -13,7 +13,7 @@
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^6.15.0",
-    "mongoose": "^8.10.0",
+    "mongoose": "^8.15.0",
     "next": "15.3.2",
     "react": "^19.0.0",
     "react-dom": "^19.1.0"
